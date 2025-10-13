@@ -442,3 +442,280 @@ impl Default for CRDTMap {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vector_clock_increment_and_merge() {
+        let mut vc1 = VectorClock::new();
+        let mut vc2 = VectorClock::new();
+
+        vc1.increment("node1");
+        vc1.increment("node1");
+        vc2.increment("node2");
+
+        assert_eq!(vc1.get("node1"), 2);
+        assert_eq!(vc2.get("node2"), 1);
+
+        vc1.merge(&vc2);
+        assert_eq!(vc1.get("node1"), 2);
+        assert_eq!(vc1.get("node2"), 1);
+    }
+
+    #[test]
+    fn test_vector_clock_happens_before() {
+        let mut vc1 = VectorClock::new();
+        let mut vc2 = VectorClock::new();
+
+        vc1.increment("node1");
+        vc2.increment("node1");
+        vc2.increment("node1");
+        vc2.increment("node2");
+
+        assert!(vc1.happens_before(&vc2));
+        assert!(!vc2.happens_before(&vc1));
+    }
+
+    #[test]
+    fn test_vector_clock_is_concurrent() {
+        let mut vc1 = VectorClock::new();
+        let mut vc2 = VectorClock::new();
+
+        vc1.increment("node1");
+        vc2.increment("node2");
+
+        assert!(vc1.is_concurrent(&vc2));
+        assert!(vc2.is_concurrent(&vc1));
+    }
+
+    #[test]
+    fn test_gcounter_increment_and_value() {
+        let mut counter = GCounter::new();
+
+        counter.increment("node1", 5);
+        counter.increment("node2", 3);
+        counter.increment("node1", 2);
+
+        assert_eq!(counter.value(), 10);
+    }
+
+    #[test]
+    fn test_gcounter_merge() {
+        let mut c1 = GCounter::new();
+        let mut c2 = GCounter::new();
+
+        c1.increment("node1", 5);
+        c2.increment("node1", 3);
+        c2.increment("node2", 4);
+
+        c1.merge(&c2);
+
+        assert_eq!(c1.value(), 9); // max(5,3) + 4 = 5 + 4
+    }
+
+    #[test]
+    fn test_gcounter_state_hash() {
+        let mut c1 = GCounter::new();
+        let mut c2 = GCounter::new();
+
+        c1.increment("node1", 5);
+        c2.increment("node1", 5);
+
+        assert_eq!(c1.state_hash(), c2.state_hash());
+    }
+
+    #[test]
+    fn test_pncounter_increment_decrement() {
+        let mut counter = PNCounter::new();
+
+        counter.increment("node1", 10);
+        counter.decrement("node1", 3);
+        counter.increment("node2", 5);
+
+        assert_eq!(counter.value(), 12);
+    }
+
+    #[test]
+    fn test_pncounter_merge() {
+        let mut c1 = PNCounter::new();
+        let mut c2 = PNCounter::new();
+
+        c1.increment("node1", 10);
+        c2.decrement("node1", 3);
+        c2.increment("node2", 5);
+
+        c1.merge(&c2);
+
+        assert_eq!(c1.value(), 12); // 10 + 5 - 3
+    }
+
+    #[test]
+    fn test_lww_register_set_and_get() {
+        let mut reg = LWWRegister::new();
+
+        reg.set("value1".to_string(), 100, "node1");
+        assert_eq!(reg.get(), Some(&"value1".to_string()));
+
+        reg.set("value2".to_string(), 200, "node1");
+        assert_eq!(reg.get(), Some(&"value2".to_string()));
+    }
+
+    #[test]
+    fn test_lww_register_merge_with_timestamp() {
+        let mut r1 = LWWRegister::new();
+        let mut r2 = LWWRegister::new();
+
+        r1.set("value1".to_string(), 100, "node1");
+        r2.set("value2".to_string(), 200, "node2");
+
+        r1.merge(&r2);
+        assert_eq!(r1.get(), Some(&"value2".to_string()));
+    }
+
+    #[test]
+    fn test_lww_register_merge_with_node_id_tiebreaker() {
+        let mut r1 = LWWRegister::new();
+        let mut r2 = LWWRegister::new();
+
+        r1.set("value1".to_string(), 100, "node1");
+        r2.set("value2".to_string(), 100, "node2");
+
+        r1.merge(&r2);
+        // node2 > node1, so value2 wins
+        assert_eq!(r1.get(), Some(&"value2".to_string()));
+    }
+
+    #[test]
+    fn test_orset_add_and_elements() {
+        let mut set = ORSet::new();
+
+        set.add("item1".to_string(), "id1".to_string());
+        set.add("item2".to_string(), "id2".to_string());
+
+        let elements = set.elements();
+        assert_eq!(elements.len(), 2);
+        assert!(elements.contains(&"item1".to_string()));
+        assert!(elements.contains(&"item2".to_string()));
+    }
+
+    #[test]
+    fn test_orset_add_and_remove() {
+        let mut set = ORSet::new();
+
+        set.add("item1".to_string(), "id1".to_string());
+        set.add("item2".to_string(), "id2".to_string());
+        set.remove(&"item1".to_string());
+
+        let elements = set.elements();
+        assert_eq!(elements.len(), 1);
+        assert!(!elements.contains(&"item1".to_string()));
+        assert!(elements.contains(&"item2".to_string()));
+    }
+
+    #[test]
+    fn test_orset_contains() {
+        let mut set = ORSet::new();
+
+        set.add("item1".to_string(), "id1".to_string());
+        assert!(set.contains(&"item1".to_string()));
+
+        set.remove(&"item1".to_string());
+        assert!(!set.contains(&"item1".to_string()));
+    }
+
+    #[test]
+    fn test_orset_merge() {
+        let mut s1 = ORSet::new();
+        let mut s2 = ORSet::new();
+
+        s1.add("item1".to_string(), "id1".to_string());
+        s2.add("item2".to_string(), "id2".to_string());
+        s2.add("item1".to_string(), "id3".to_string());
+
+        s1.merge(&s2);
+
+        let elements = s1.elements();
+        assert_eq!(elements.len(), 2);
+        assert!(elements.contains(&"item1".to_string()));
+        assert!(elements.contains(&"item2".to_string()));
+    }
+
+    #[test]
+    fn test_orset_add_remove_add_semantic() {
+        let mut set = ORSet::new();
+
+        set.add("item1".to_string(), "id1".to_string());
+        set.remove(&"item1".to_string());
+        set.add("item1".to_string(), "id2".to_string());
+
+        assert!(set.contains(&"item1".to_string()));
+        let elements = set.elements();
+        assert!(elements.contains(&"item1".to_string()));
+    }
+
+    #[test]
+    fn test_crdt_map_gcounter_operations() {
+        let mut map = CRDTMap::new();
+
+        map.entries
+            .insert("counter1".to_string(), CRDTValue::GCounter(GCounter::new()));
+
+        if let Some(CRDTValue::GCounter(c)) = map.entries.get_mut("counter1") {
+            c.increment("node1", 5);
+        }
+
+        if let Some(CRDTValue::GCounter(c)) = map.entries.get("counter1") {
+            assert_eq!(c.value(), 5);
+        }
+    }
+
+    #[test]
+    fn test_crdt_map_merge() {
+        let mut m1 = CRDTMap::new();
+        let mut m2 = CRDTMap::new();
+
+        let mut c1 = GCounter::new();
+        c1.increment("node1", 5);
+        m1.entries
+            .insert("counter".to_string(), CRDTValue::GCounter(c1));
+
+        let mut c2 = GCounter::new();
+        c2.increment("node2", 3);
+        m2.entries
+            .insert("counter".to_string(), CRDTValue::GCounter(c2));
+
+        m1.merge(&m2);
+
+        if let Some(CRDTValue::GCounter(c)) = m1.entries.get("counter") {
+            assert_eq!(c.value(), 8);
+        }
+    }
+
+    #[test]
+    fn test_crdt_map_state_hash_consistency() {
+        let mut m1 = CRDTMap::new();
+        let mut m2 = CRDTMap::new();
+
+        let mut c1 = GCounter::new();
+        c1.increment("node1", 5);
+        m1.entries
+            .insert("counter".to_string(), CRDTValue::GCounter(c1.clone()));
+        m2.entries
+            .insert("counter".to_string(), CRDTValue::GCounter(c1));
+
+        assert_eq!(m1.state_hash(), m2.state_hash());
+    }
+
+    #[test]
+    fn test_crdt_map_get_and_set() {
+        let mut map = CRDTMap::new();
+
+        let counter = GCounter::new();
+        map.set("test".to_string(), CRDTValue::GCounter(counter));
+
+        assert!(map.get("test").is_some());
+        assert!(map.get("nonexistent").is_none());
+    }
+}
