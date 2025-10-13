@@ -7,3 +7,7 @@ data
 *.profraw
 *.profdata
 /target/llvm-cov-target
+
+# 测试生成的文件
+test_data/
+node*.log
