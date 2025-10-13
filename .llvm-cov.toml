@@ -1,0 +1,4 @@
+[report]
+ignore-filename-regex = [
+    ".*/silent/silent/.*",
+]

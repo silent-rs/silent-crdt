@@ -4,3 +4,6 @@
 Cargo.lock
 certs/
 data
+*.profraw
+*.profdata
+/target/llvm-cov-target
