@@ -235,6 +235,7 @@ async fn health_handler(_req: Request) -> Result<Response> {
 pub fn build_routes(app_state: AppState) -> Route {
     Route::new_root()
         .hook(app_state)
+        // API 路由
         .append(Route::new("sync").post(sync_handler))
         .append(Route::new("sync-peer").post(sync_peer_handler))
         .append(Route::new("merge").post(merge_handler))
@@ -242,4 +243,6 @@ pub fn build_routes(app_state: AppState) -> Route {
         .append(Route::new("state-hash").get(get_state_hash_handler))
         .append(Route::new("oplog").get(get_oplog_handler))
         .append(Route::new("health").get(health_handler))
+        // 静态文件服务（使用 Silent 内置的静态资源处理器）
+        .with_static("./static")
 }
