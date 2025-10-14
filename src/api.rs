@@ -212,6 +212,203 @@ async fn get_oplog_handler(req: Request) -> Result<Response> {
     Ok(Response::text(&oplog_json))
 }
 
+/// GET /history - 获取操作历史（带详细信息）
+async fn get_history_handler(req: Request) -> Result<Response> {
+    let state = req.extensions().get::<AppState>().unwrap().clone();
+    let sync_state = state.sync_state.read().await;
+
+    #[derive(Serialize)]
+    struct HistoryEntry {
+        id: String,
+        timestamp: i64,
+        operation_type: String,
+        key: String,
+        details: String,
+        node_id: String,
+        causal_context: std::collections::HashMap<String, i64>,
+    }
+
+    let oplog = &sync_state.op_log;
+    let mut history: Vec<HistoryEntry> = Vec::new();
+
+    for entry in &oplog.ops {
+        let (op_type, key, details) = match &entry.op {
+            crate::sync::Operation::GCounterIncrement {
+                key,
+                node_id,
+                delta,
+            } => (
+                "GCounter.Increment",
+                key.clone(),
+                format!("节点 {} 增加 {}", node_id, delta),
+            ),
+            crate::sync::Operation::PNCounterIncrement {
+                key,
+                node_id,
+                delta,
+            } => (
+                "PNCounter.Increment",
+                key.clone(),
+                format!("节点 {} 增加 {}", node_id, delta),
+            ),
+            crate::sync::Operation::PNCounterDecrement {
+                key,
+                node_id,
+                delta,
+            } => (
+                "PNCounter.Decrement",
+                key.clone(),
+                format!("节点 {} 减少 {}", node_id, delta),
+            ),
+            crate::sync::Operation::LwwRegisterSet {
+                key,
+                value,
+                timestamp,
+                node_id,
+            } => (
+                "LWWRegister.Set",
+                key.clone(),
+                format!("节点 {} 设置为 '{}' (ts: {})", node_id, value, timestamp),
+            ),
+            crate::sync::Operation::OrSetAdd {
+                key,
+                value,
+                unique_id,
+            } => (
+                "ORSet.Add",
+                key.clone(),
+                format!("添加元素 '{}' (id: {})", value, &unique_id[..8]),
+            ),
+            crate::sync::Operation::OrSetRemove { key, value } => {
+                ("ORSet.Remove", key.clone(), format!("移除元素 '{}'", value))
+            }
+        };
+
+        history.push(HistoryEntry {
+            id: entry.id.clone(),
+            timestamp: entry.ts,
+            operation_type: op_type.to_string(),
+            key,
+            details,
+            node_id: oplog.node_id.clone(),
+            causal_context: entry
+                .causal
+                .clocks
+                .iter()
+                .map(|(k, v)| (k.clone(), *v as i64))
+                .collect(),
+        });
+    }
+
+    Ok(Response::json(&history))
+}
+
+/// GET /conflicts - 检测并返回可能的冲突
+async fn get_conflicts_handler(req: Request) -> Result<Response> {
+    let state = req.extensions().get::<AppState>().unwrap().clone();
+    let sync_state = state.sync_state.read().await;
+
+    #[derive(Serialize)]
+    struct Conflict {
+        key: String,
+        conflict_type: String,
+        operations: Vec<ConflictOperation>,
+        resolution: String,
+    }
+
+    #[derive(Serialize)]
+    struct ConflictOperation {
+        id: String,
+        timestamp: i64,
+        node_id: String,
+        details: String,
+    }
+
+    let mut conflicts: Vec<Conflict> = Vec::new();
+    let oplog = &sync_state.op_log;
+
+    // 检测 LWWRegister 的并发写入
+    let mut lww_writes: std::collections::HashMap<String, Vec<&crate::sync::OpLogEntry>> =
+        std::collections::HashMap::new();
+
+    for entry in &oplog.ops {
+        if let crate::sync::Operation::LwwRegisterSet { key, .. } = &entry.op {
+            lww_writes.entry(key.clone()).or_default().push(entry);
+        }
+    }
+
+    for (key, entries) in lww_writes {
+        if entries.len() > 1 {
+            // 检查是否有并发写入（向量时钟无法比较）
+            let mut concurrent_writes = Vec::new();
+            for i in 0..entries.len() {
+                for j in (i + 1)..entries.len() {
+                    let clock1 = &entries[i].causal;
+                    let clock2 = &entries[j].causal;
+
+                    if !clock1.happens_before(clock2) && !clock2.happens_before(clock1) {
+                        if concurrent_writes.is_empty()
+                            && let crate::sync::Operation::LwwRegisterSet {
+                                value,
+                                timestamp,
+                                node_id,
+                                ..
+                            } = &entries[i].op
+                        {
+                            concurrent_writes.push(ConflictOperation {
+                                id: entries[i].id.clone(),
+                                timestamp: *timestamp,
+                                node_id: node_id.clone(),
+                                details: format!("设置为 '{}'", value),
+                            });
+                        }
+
+                        if let crate::sync::Operation::LwwRegisterSet {
+                            value,
+                            timestamp,
+                            node_id,
+                            ..
+                        } = &entries[j].op
+                        {
+                            concurrent_writes.push(ConflictOperation {
+                                id: entries[j].id.clone(),
+                                timestamp: *timestamp,
+                                node_id: node_id.clone(),
+                                details: format!("设置为 '{}'", value),
+                            });
+                        }
+                    }
+                }
+            }
+
+            if !concurrent_writes.is_empty() {
+                // 找出最终胜出的值
+                let winner_node = concurrent_writes
+                    .iter()
+                    .max_by(|a, b| {
+                        a.timestamp
+                            .cmp(&b.timestamp)
+                            .then_with(|| a.node_id.cmp(&b.node_id))
+                    })
+                    .map(|w| w.node_id.clone())
+                    .unwrap();
+
+                conflicts.push(Conflict {
+                    key: key.clone(),
+                    conflict_type: "LWWRegister 并发写入".to_string(),
+                    operations: concurrent_writes,
+                    resolution: format!(
+                        "根据 LWW 规则，时间戳较大的操作胜出 (节点: {})",
+                        winner_node
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(Response::json(&conflicts))
+}
+
 /// GET /health - 健康检查
 async fn health_handler(_req: Request) -> Result<Response> {
     #[derive(Serialize)]
@@ -242,6 +439,8 @@ pub fn build_routes(app_state: AppState) -> Route {
         .append(Route::new("state").get(get_state_handler))
         .append(Route::new("state-hash").get(get_state_hash_handler))
         .append(Route::new("oplog").get(get_oplog_handler))
+        .append(Route::new("history").get(get_history_handler))
+        .append(Route::new("conflicts").get(get_conflicts_handler))
         .append(Route::new("health").get(health_handler))
         // 静态文件服务（使用 Silent 内置的静态资源处理器）
         .with_static("./static")

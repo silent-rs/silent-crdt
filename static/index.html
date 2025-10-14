@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -246,7 +247,9 @@
         }
 
         @keyframes spin {
-            to { transform: rotate(360deg); }
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         .auto-refresh {
@@ -267,11 +270,22 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
             <h1>🔄 Silent-CRDT 状态监控面板</h1>
             <p>实时查看 CRDT 数据状态与同步信息</p>
+        </div>
+
+        <div
+            style="background: white; border-radius: 12px; padding: 15px 30px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); display: flex; gap: 15px;">
+            <a href="/"
+                style="color: #667eea; text-decoration: none; padding: 8px 16px; border-radius: 6px; transition: all 0.2s; font-weight: 600; background: #667eea; color: white;">📊
+                状态监控</a>
+            <a href="/history.html"
+                style="color: #667eea; text-decoration: none; padding: 8px 16px; border-radius: 6px; transition: all 0.2s; font-weight: 600;">📜
+                历史回放</a>
         </div>
 
         <div class="stats">
@@ -586,4 +600,5 @@
         });
     </script>
 </body>
+
 </html>

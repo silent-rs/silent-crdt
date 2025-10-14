@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Silent-CRDT 操作历史与冲突分析</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #718096;
+            font-size: 16px;
+        }
+
+        .nav {
+            background: white;
+            border-radius: 12px;
+            padding: 15px 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            gap: 15px;
+        }
+
+        .nav a {
+            color: #667eea;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            transition: all 0.2s;
+            font-weight: 600;
+        }
+
+        .nav a:hover {
+            background: #f7fafc;
+        }
+
+        .nav a.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .card h2 {
+            color: #2d3748;
+            font-size: 20px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .timeline {
+            position: relative;
+            padding-left: 40px;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 15px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #e2e8f0;
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 30px;
+            padding: 15px;
+            background: #f7fafc;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -29px;
+            top: 20px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #667eea;
+            border: 3px solid white;
+            box-shadow: 0 0 0 2px #667eea;
+        }
+
+        .timeline-item.conflict::before {
+            background: #f56565;
+            box-shadow: 0 0 0 2px #f56565;
+        }
+
+        .timeline-item.conflict {
+            border-left-color: #f56565;
+            background: #fff5f5;
+        }
+
+        .timeline-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .timeline-type {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .timeline-item.conflict .timeline-type {
+            background: #f56565;
+        }
+
+        .timeline-time {
+            color: #a0aec0;
+            font-size: 12px;
+        }
+
+        .timeline-key {
+            color: #2d3748;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .timeline-details {
+            color: #4a5568;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .timeline-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #718096;
+        }
+
+        .timeline-meta span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .conflict-box {
+            background: #fff5f5;
+            border: 2px solid #f56565;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+
+        .conflict-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .conflict-badge {
+            background: #f56565;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .conflict-key {
+            color: #2d3748;
+            font-weight: 600;
+            font-size: 18px;
+        }
+
+        .conflict-operations {
+            margin-bottom: 15px;
+        }
+
+        .conflict-op {
+            background: white;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            border-left: 3px solid #f56565;
+        }
+
+        .conflict-op-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }
+
+        .conflict-op-node {
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .conflict-op-time {
+            color: #a0aec0;
+            font-size: 12px;
+        }
+
+        .conflict-resolution {
+            background: #c6f6d5;
+            border: 1px solid #48bb78;
+            padding: 12px;
+            border-radius: 6px;
+            color: #22543d;
+        }
+
+        .conflict-resolution strong {
+            color: #22543d;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+        }
+
+        button:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        button.secondary {
+            background: #718096;
+        }
+
+        button.secondary:hover {
+            background: #4a5568;
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .filter-group label {
+            color: #2d3748;
+            font-weight: 600;
+        }
+
+        .filter-group select {
+            padding: 8px 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #a0aec0;
+        }
+
+        .empty-state svg {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-item {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-value {
+            color: #667eea;
+            font-size: 32px;
+            font-weight: bold;
+        }
+
+        .stat-label {
+            color: #718096;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .causal-context {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📜 操作历史与冲突分析</h1>
+            <p>查看 CRDT 操作历史、检测并发冲突、分析解决策略</p>
+        </div>
+
+        <div class="nav">
+            <a href="/">📊 状态监控</a>
+            <a href="/static/history.html" class="active">📜 历史回放</a>
+        </div>
+
+        <div class="card">
+            <h2>📈 统计信息</h2>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="totalOps">-</div>
+                    <div class="stat-label">总操作数</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="conflictCount">-</div>
+                    <div class="stat-label">检测到的冲突</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="nodeCount">-</div>
+                    <div class="stat-label">参与节点</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="timeRange">-</div>
+                    <div class="stat-label">时间跨度（秒）</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>⚠️ 检测到的冲突</h2>
+            <div class="controls">
+                <button onclick="loadConflicts()" id="conflictBtn">
+                    <span id="conflictText">🔍 加载冲突检测</span>
+                </button>
+            </div>
+            <div id="conflictsContainer">
+                <div class="empty-state">
+                    <p>点击上方按钮开始冲突检测</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>📋 操作历史时间线</h2>
+            <div class="controls">
+                <button onclick="loadHistory()" id="historyBtn">
+                    <span id="historyText">🔄 加载历史记录</span>
+                </button>
+                <div class="filter-group">
+                    <label>过滤类型:</label>
+                    <select id="filterType" onchange="filterHistory()">
+                        <option value="all">全部</option>
+                        <option value="GCounter">GCounter</option>
+                        <option value="PNCounter">PNCounter</option>
+                        <option value="LWWRegister">LWWRegister</option>
+                        <option value="ORSet">ORSet</option>
+                    </select>
+                </div>
+            </div>
+            <div id="historyContainer">
+                <div class="empty-state">
+                    <p>点击上方按钮加载操作历史</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';
+        let allHistory = [];
+
+        // 加载冲突检测
+        async function loadConflicts() {
+            const btn = document.getElementById('conflictBtn');
+            const btnText = document.getElementById('conflictText');
+            const container = document.getElementById('conflictsContainer');
+
+            btn.disabled = true;
+            btnText.innerHTML = '<span class="loading"></span> 检测中...';
+
+            try {
+                const response = await fetch(`${API_BASE}/conflicts`);
+                if (!response.ok) throw new Error('Failed to load conflicts');
+
+                const conflicts = await response.json();
+                displayConflicts(conflicts);
+                document.getElementById('conflictCount').textContent = conflicts.length;
+            } catch (error) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <p style="color: #f56565;">❌ 加载失败: ${error.message}</p>
+                    </div>
+                `;
+            } finally {
+                btn.disabled = false;
+                btnText.textContent = '🔍 重新检测';
+            }
+        }
+
+        // 显示冲突
+        function displayConflicts(conflicts) {
+            const container = document.getElementById('conflictsContainer');
+
+            if (conflicts.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <p style="color: #48bb78;">✅ 未检测到冲突</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            for (const conflict of conflicts) {
+                html += `
+                    <div class="conflict-box">
+                        <div class="conflict-header">
+                            <span class="conflict-badge">⚠️ 冲突</span>
+                            <span class="conflict-key">键: ${escapeHtml(conflict.key)}</span>
+                        </div>
+                        <div style="color: #718096; margin-bottom: 15px;">
+                            类型: ${conflict.conflict_type}
+                        </div>
+                        <div class="conflict-operations">
+                            <strong>冲突的操作:</strong>
+                            ${conflict.operations.map(op => `
+                                <div class="conflict-op">
+                                    <div class="conflict-op-header">
+                                        <span class="conflict-op-node">节点: ${escapeHtml(op.node_id)}</span>
+                                        <span class="conflict-op-time">${formatTimestamp(op.timestamp)}</span>
+                                    </div>
+                                    <div>${escapeHtml(op.details)}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div class="conflict-resolution">
+                            <strong>🎯 解决方案:</strong> ${escapeHtml(conflict.resolution)}
+                        </div>
+                    </div>
+                `;
+            }
+            container.innerHTML = html;
+        }
+
+        // 加载操作历史
+        async function loadHistory() {
+            const btn = document.getElementById('historyBtn');
+            const btnText = document.getElementById('historyText');
+            const container = document.getElementById('historyContainer');
+
+            btn.disabled = true;
+            btnText.innerHTML = '<span class="loading"></span> 加载中...';
+
+            try {
+                const response = await fetch(`${API_BASE}/history`);
+                if (!response.ok) throw new Error('Failed to load history');
+
+                allHistory = await response.json();
+                displayHistory(allHistory);
+                updateStats(allHistory);
+            } catch (error) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <p style="color: #f56565;">❌ 加载失败: ${error.message}</p>
+                    </div>
+                `;
+            } finally {
+                btn.disabled = false;
+                btnText.textContent = '🔄 刷新历史';
+            }
+        }
+
+        // 显示操作历史
+        function displayHistory(history) {
+            const container = document.getElementById('historyContainer');
+
+            if (history.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <p>📭 暂无操作历史</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // 按时间戳倒序排列
+            const sorted = [...history].sort((a, b) => b.timestamp - a.timestamp);
+
+            let html = '<div class="timeline">';
+            for (const entry of sorted) {
+                html += `
+                    <div class="timeline-item">
+                        <div class="timeline-header">
+                            <span class="timeline-type">${escapeHtml(entry.operation_type)}</span>
+                            <span class="timeline-time">${formatTimestamp(entry.timestamp)}</span>
+                        </div>
+                        <div class="timeline-key">键: ${escapeHtml(entry.key)}</div>
+                        <div class="timeline-details">${escapeHtml(entry.details)}</div>
+                        <div class="timeline-meta">
+                            <span>📝 ID: ${entry.id.substring(0, 12)}...</span>
+                            <span>🖥️ 节点: ${escapeHtml(entry.node_id)}</span>
+                        </div>
+                        <div class="causal-context">
+                            因果上下文: ${JSON.stringify(entry.causal_context)}
+                        </div>
+                    </div>
+                `;
+            }
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        // 过滤历史记录
+        function filterHistory() {
+            const filterType = document.getElementById('filterType').value;
+
+            if (filterType === 'all') {
+                displayHistory(allHistory);
+            } else {
+                const filtered = allHistory.filter(entry =>
+                    entry.operation_type.startsWith(filterType)
+                );
+                displayHistory(filtered);
+            }
+        }
+
+        // 更新统计信息
+        function updateStats(history) {
+            document.getElementById('totalOps').textContent = history.length;
+
+            const nodes = new Set(history.map(h => h.node_id));
+            document.getElementById('nodeCount').textContent = nodes.size;
+
+            if (history.length > 0) {
+                const timestamps = history.map(h => h.timestamp);
+                const minTime = Math.min(...timestamps);
+                const maxTime = Math.max(...timestamps);
+                const rangeSeconds = Math.floor((maxTime - minTime) / 1000);
+                document.getElementById('timeRange').textContent = rangeSeconds;
+            }
+        }
+
+        // 格式化时间戳
+        function formatTimestamp(ts) {
+            const date = new Date(ts);
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        // HTML 转义
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 页面加载时自动加载数据
+        window.addEventListener('load', () => {
+            loadHistory();
+            loadConflicts();
+        });
+    </script>
+</body>
+</html>
