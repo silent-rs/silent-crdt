@@ -1,3 +1,5 @@
+use crate::auth::{JwtManager, Role};
+use crate::signature::SignatureManager;
 use crate::storage::Storage;
 use crate::sync::{ChangeRequest, SyncRequest, SyncResponse, SyncState};
 use serde::{Deserialize, Serialize};
@@ -11,20 +13,34 @@ pub struct AppState {
     pub node_id: String,
     pub sync_state: Arc<RwLock<SyncState>>,
     pub storage: Arc<Storage>,
+    pub jwt_manager: Arc<JwtManager>,
+    pub signature_manager: Arc<SignatureManager>,
+    pub auth_enabled: bool, // 是否启用权限控制
 }
 
 impl AppState {
-    pub fn new(node_id: String, storage: Storage) -> anyhow::Result<Self> {
+    pub fn new(
+        node_id: String,
+        storage: Storage,
+        jwt_secret: String,
+        auth_enabled: bool,
+    ) -> anyhow::Result<Self> {
         let sync_state = if let Some(state) = storage.load_state(&node_id)? {
             Arc::new(RwLock::new(state))
         } else {
             Arc::new(RwLock::new(SyncState::new(node_id.clone())))
         };
 
+        let jwt_manager = Arc::new(JwtManager::new(&jwt_secret));
+        let signature_manager = Arc::new(SignatureManager::new(node_id.clone()));
+
         Ok(Self {
             node_id,
             sync_state,
             storage: Arc::new(storage),
+            jwt_manager,
+            signature_manager,
+            auth_enabled,
         })
     }
 }
@@ -428,20 +444,162 @@ async fn health_handler(_req: Request) -> Result<Response> {
     Ok(Response::json(&response))
 }
 
+/// POST /auth/token - 生成 JWT token
+async fn generate_token_handler(mut req: Request) -> Result<Response> {
+    let state = req.extensions().get::<AppState>().unwrap().clone();
+
+    #[derive(Deserialize)]
+    struct TokenRequest {
+        node_id: String,
+        role: Role,
+        expires_in_secs: Option<u64>,
+    }
+
+    #[derive(Serialize)]
+    struct TokenResponse {
+        token: String,
+        expires_in: u64,
+    }
+
+    let token_req: TokenRequest = req.json_parse().await?;
+    let expires_in = token_req.expires_in_secs.unwrap_or(3600); // 默认 1 小时
+
+    let token = state
+        .jwt_manager
+        .generate_token(token_req.node_id, token_req.role, expires_in)
+        .map_err(|e| {
+            SilentError::business_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to generate token: {}", e),
+            )
+        })?;
+
+    Ok(Response::json(&TokenResponse { token, expires_in }))
+}
+
+/// GET /auth/public-key - 获取节点的公钥
+async fn get_public_key_handler(req: Request) -> Result<Response> {
+    let state = req.extensions().get::<AppState>().unwrap().clone();
+
+    #[derive(Serialize)]
+    struct PublicKeyResponse {
+        node_id: String,
+        public_key: String,
+    }
+
+    Ok(Response::json(&PublicKeyResponse {
+        node_id: state.node_id.clone(),
+        public_key: state.signature_manager.public_key_base64(),
+    }))
+}
+
+/// 权限验证中间件
+#[derive(Clone)]
+pub struct AuthMiddleware {
+    required_role: Role,
+}
+
+impl AuthMiddleware {
+    pub fn new(required_role: Role) -> Self {
+        Self { required_role }
+    }
+}
+
+#[async_trait::async_trait]
+impl MiddleWareHandler for AuthMiddleware {
+    async fn handle(&self, req: Request, next: &Next) -> Result<Response> {
+        let state = req.extensions().get::<AppState>().unwrap().clone();
+
+        // 如果未启用权限控制，直接放行
+        if !state.auth_enabled {
+            return next.call(req).await;
+        }
+
+        // 获取 Authorization header
+        let auth_header = req
+            .headers()
+            .get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                SilentError::business_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Missing authorization header",
+                )
+            })?;
+
+        // 提取 token
+        let token = JwtManager::extract_token(auth_header).map_err(|e| {
+            SilentError::business_error(StatusCode::UNAUTHORIZED, format!("Invalid token: {}", e))
+        })?;
+
+        // 验证 token
+        let claims = state.jwt_manager.verify_token(token).map_err(|e| {
+            SilentError::business_error(StatusCode::UNAUTHORIZED, format!("Invalid token: {}", e))
+        })?;
+
+        // 检查权限
+        if !claims.role.has_permission(&self.required_role) {
+            return Err(SilentError::business_error(
+                StatusCode::FORBIDDEN,
+                "Insufficient permissions",
+            ));
+        }
+
+        next.call(req).await
+    }
+}
+
 /// 构建 API 路由
 pub fn build_routes(app_state: AppState) -> Route {
     Route::new_root()
         .hook(app_state)
-        // API 路由
-        .append(Route::new("sync").post(sync_handler))
-        .append(Route::new("sync-peer").post(sync_peer_handler))
-        .append(Route::new("merge").post(merge_handler))
-        .append(Route::new("state").get(get_state_handler))
-        .append(Route::new("state-hash").get(get_state_hash_handler))
-        .append(Route::new("oplog").get(get_oplog_handler))
-        .append(Route::new("history").get(get_history_handler))
-        .append(Route::new("conflicts").get(get_conflicts_handler))
+        // 认证相关路由（无需权限）
+        .append(Route::new("auth/token").post(generate_token_handler))
+        .append(Route::new("auth/public-key").get(get_public_key_handler))
+        // 需要 Writer 权限的路由
+        .append(
+            Route::new("sync")
+                .hook(AuthMiddleware::new(Role::Writer))
+                .post(sync_handler),
+        )
+        .append(
+            Route::new("sync-peer")
+                .hook(AuthMiddleware::new(Role::Writer))
+                .post(sync_peer_handler),
+        )
+        .append(
+            Route::new("merge")
+                .hook(AuthMiddleware::new(Role::Writer))
+                .post(merge_handler),
+        )
+        // 需要 Reader 权限的路由
+        .append(
+            Route::new("state")
+                .hook(AuthMiddleware::new(Role::Reader))
+                .get(get_state_handler),
+        )
+        .append(
+            Route::new("state-hash")
+                .hook(AuthMiddleware::new(Role::Reader))
+                .get(get_state_hash_handler),
+        )
+        .append(
+            Route::new("oplog")
+                .hook(AuthMiddleware::new(Role::Reader))
+                .get(get_oplog_handler),
+        )
+        .append(
+            Route::new("history")
+                .hook(AuthMiddleware::new(Role::Reader))
+                .get(get_history_handler),
+        )
+        .append(
+            Route::new("conflicts")
+                .hook(AuthMiddleware::new(Role::Reader))
+                .get(get_conflicts_handler),
+        )
+        // 健康检查（无需权限）
         .append(Route::new("health").get(health_handler))
-        // 静态文件服务（使用 Silent 内置的静态资源处理器）
+        // 静态文件服务（无需权限）
         .with_static("./static")
 }

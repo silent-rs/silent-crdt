@@ -70,6 +70,91 @@ curl -X POST http://127.0.0.1:8080/sync -d '{"changes":[{"op":"add","key":"note"
 
 这两个面板为理解和调试分布式 CRDT 系统提供了强大的可视化工具。
 
+## 权限控制与安全
+
+### 启用权限控制
+
+默认情况下，权限控制是**禁用**的。要启用权限控制，请在启动时添加 `--auth-enabled` 参数：
+
+```bash
+cargo run -- --auth-enabled --jwt-secret "your-secret-key"
+```
+
+### 角色说明
+
+系统支持三种角色：
+
+- **admin** - 管理员，拥有所有权限
+- **writer** - 写入者，可以修改 CRDT 数据和查看状态
+- **reader** - 读取者，只能查看状态和历史
+
+### 生成 JWT Token
+
+```bash
+curl -X POST http://127.0.0.1:8080/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "node_id": "node1",
+    "role": "writer",
+    "expires_in_secs": 3600
+  }'
+```
+
+响应示例：
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_in": 3600
+}
+```
+
+### 使用 Token 访问 API
+
+在请求头中添加 `Authorization: Bearer <token>`：
+
+```bash
+# 查看状态（需要 reader 权限）
+curl -X GET http://127.0.0.1:8080/state \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# 同步数据（需要 writer 权限）
+curl -X POST http://127.0.0.1:8080/sync \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{"changes":[{"op":"add","key":"note","value":"hello"}]}'
+```
+
+### 获取节点公钥
+
+每个节点都有一个 Ed25519 密钥对，用于操作签名：
+
+```bash
+curl -X GET http://127.0.0.1:8080/auth/public-key
+```
+
+响应示例：
+```json
+{
+  "node_id": "01HZXABC123...",
+  "public_key": "base64_encoded_public_key..."
+}
+```
+
+### API 权限要求
+
+| API 端点 | 需要权限 | 说明 |
+|---------|---------|------|
+| `POST /auth/token` | 无 | 生成 JWT token |
+| `GET /auth/public-key` | 无 | 获取节点公钥 |
+| `POST /sync` | writer | 同步数据变更 |
+| `POST /sync-peer` | writer | 触发节点间同步 |
+| `POST /merge` | writer | 合并状态 |
+| `GET /state` | reader | 查看当前状态 |
+| `GET /state-hash` | reader | 查看状态哈希 |
+| `GET /oplog` | reader | 查看操作日志 |
+| `GET /history` | reader | 查看操作历史 |
+| `GET /conflicts` | reader | 查看冲突信息 |
+| `GET /health` | 无 | 健康检查 |
 
 ## 测试与验证
 
@@ -212,8 +297,12 @@ Conflicts: 3.2% (resolved by CRDT rules)
   - ✅ 并发冲突自动检测
   - ✅ 因果上下文可视化
   - ✅ LWW 冲突解决策略展示
+- ✅ 权限控制与版本签名
+  - ✅ 基于 JWT 的身份认证
+  - ✅ 基于角色的访问控制（RBAC）
+  - ✅ Ed25519 数字签名支持
+  - ✅ 权限验证中间件
 - 🚧 gRPC 接口支持（可选）
-- ❌ 权限控制与版本签名
 
 ## 关联项目
 

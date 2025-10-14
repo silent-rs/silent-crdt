@@ -1,5 +1,7 @@
 mod api;
+mod auth;
 mod crdt;
+mod signature;
 mod storage;
 mod sync;
 
@@ -24,6 +26,14 @@ struct Args {
     /// 数据存储路径
     #[arg(long, default_value = "./data")]
     data_path: String,
+
+    /// JWT 密钥
+    #[arg(long, default_value = "silent-crdt-secret-key-change-in-production")]
+    jwt_secret: String,
+
+    /// 是否启用权限控制
+    #[arg(long, default_value = "false")]
+    auth_enabled: bool,
 }
 
 #[tokio::main]
@@ -55,8 +65,14 @@ async fn main() -> Result<()> {
     tracing::info!("Storage initialized");
 
     // 创建应用状态
-    let app_state = api::AppState::new(node_id.clone(), storage)?;
+    let app_state = api::AppState::new(
+        node_id.clone(),
+        storage,
+        args.jwt_secret.clone(),
+        args.auth_enabled,
+    )?;
     tracing::info!("Application state created");
+    tracing::info!("Auth enabled: {}", args.auth_enabled);
 
     // 构建路由
     let routes = api::build_routes(app_state);
