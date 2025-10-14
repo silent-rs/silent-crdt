@@ -26,6 +26,8 @@ src/
 
 ## 使用示例
 
+### HTTP API 模式
+
 启动服务：
 ```bash
 cargo run
@@ -40,6 +42,28 @@ open http://127.0.0.1:8080
 ```bash
 curl -X POST http://127.0.0.1:8080/sync -d '{"changes":[{"op":"add","key":"note","value":"hello"}]}'
 ```
+
+### gRPC 模式
+
+启动 gRPC 服务（同时启动 HTTP 和 gRPC）：
+```bash
+cargo run -- --grpc-enabled --grpc-port 50051
+```
+
+运行 gRPC 客户端示例：
+```bash
+cargo run --example grpc_client
+```
+
+gRPC 服务提供以下 RPC 方法：
+- `Sync` - 同步数据变更
+- `Merge` - 合并状态
+- `GetState` - 获取当前状态
+- `GetStateHash` - 获取状态哈希
+- `GetOpLog` - 获取操作日志
+- `GetHistory` - 获取操作历史
+- `GetConflicts` - 获取冲突信息
+- `HealthCheck` - 健康检查
 
 ## Web 监控面板
 
@@ -302,7 +326,11 @@ Conflicts: 3.2% (resolved by CRDT rules)
   - ✅ 基于角色的访问控制（RBAC）
   - ✅ Ed25519 数字签名支持
   - ✅ 权限验证中间件
-- 🚧 gRPC 接口支持（可选）
+- ✅ gRPC 接口支持
+  - ✅ Protocol Buffers 定义
+  - ✅ gRPC 服务端实现
+  - ✅ 完整的 RPC 方法支持
+  - ✅ gRPC 客户端示例
 
 ## 关联项目
 

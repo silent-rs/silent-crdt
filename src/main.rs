@@ -1,6 +1,7 @@
 mod api;
 mod auth;
 mod crdt;
+mod grpc_service;
 mod signature;
 mod storage;
 mod sync;
@@ -34,6 +35,14 @@ struct Args {
     /// 是否启用权限控制
     #[arg(long, default_value = "false")]
     auth_enabled: bool,
+
+    /// gRPC 服务端口
+    #[arg(long, default_value = "50051")]
+    grpc_port: u16,
+
+    /// 是否启用 gRPC 服务
+    #[arg(long, default_value = "false")]
+    grpc_enabled: bool,
 }
 
 #[tokio::main]
@@ -75,15 +84,39 @@ async fn main() -> Result<()> {
     tracing::info!("Auth enabled: {}", args.auth_enabled);
 
     // 构建路由
-    let routes = api::build_routes(app_state);
+    let routes = api::build_routes(app_state.clone());
 
-    // 启动服务器
-    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", args.port)
+    // 启动 HTTP 服务器
+    let http_addr: std::net::SocketAddr = format!("127.0.0.1:{}", args.port)
         .parse()
-        .expect("Invalid address");
-    tracing::info!("Starting server on http://{}", addr);
+        .expect("Invalid HTTP address");
+    tracing::info!("Starting HTTP server on http://{}", http_addr);
 
-    Server::new().bind(addr).serve(routes).await;
+    // 如果启用 gRPC，同时启动 gRPC 服务器
+    if args.grpc_enabled {
+        let grpc_addr: std::net::SocketAddr = format!("127.0.0.1:{}", args.grpc_port)
+            .parse()
+            .expect("Invalid gRPC address");
+        tracing::info!("Starting gRPC server on {}", grpc_addr);
 
-    Ok(())
+        let grpc_service = grpc_service::CrdtServiceImpl::new(app_state.clone());
+        let grpc_server = grpc_service.into_server();
+
+        // 并行运行 HTTP 和 gRPC 服务器
+        tokio::select! {
+            _ = Server::new().bind(http_addr).serve(routes) => {
+                tracing::info!("HTTP server stopped");
+                Ok(())
+            }
+            result = tonic::transport::Server::builder()
+                .add_service(grpc_server)
+                .serve(grpc_addr) => {
+                tracing::info!("gRPC server stopped");
+                result.map_err(|e| anyhow::anyhow!("gRPC server error: {}", e))
+            }
+        }
+    } else {
+        Server::new().bind(http_addr).serve(routes).await;
+        Ok(())
+    }
 }
