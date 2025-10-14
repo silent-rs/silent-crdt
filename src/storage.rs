@@ -210,4 +210,124 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_load_snapshot() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let storage = Storage::new(temp_dir.path().to_str().unwrap())?;
+
+        let node_id = "test-node";
+        let mut state = SyncState::new(node_id.to_string());
+
+        // 应用一些操作
+        use crate::sync::{Change, ChangeRequest};
+        state
+            .apply_changes(ChangeRequest {
+                changes: vec![Change {
+                    op: "increment".to_string(),
+                    key: "counter".to_string(),
+                    value: None,
+                    delta: Some(5),
+                }],
+            })
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        // 保存快照
+        storage.save_snapshot(node_id, 1, &state)?;
+
+        // 加载快照
+        let loaded = storage.load_snapshot(node_id, 1)?;
+        assert!(loaded.is_some());
+
+        // 尝试加载不存在的快照
+        let not_found = storage.load_snapshot(node_id, 999)?;
+        assert!(not_found.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_state_persistence() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let storage = Storage::new(temp_dir.path().to_str().unwrap())?;
+
+        let node_id = "test-node";
+        let mut state = SyncState::new(node_id.to_string());
+
+        // 添加一些数据
+        use crate::sync::{Change, ChangeRequest};
+        state
+            .apply_changes(ChangeRequest {
+                changes: vec![Change {
+                    op: "increment".to_string(),
+                    key: "counter".to_string(),
+                    value: None,
+                    delta: Some(10),
+                }],
+            })
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        // 保存状态
+        storage.save_state(node_id, &state)?;
+
+        // 确认状态存在
+        let loaded = storage.load_state(node_id)?;
+        assert!(loaded.is_some());
+
+        // 验证状态哈希相同
+        let loaded_state = loaded.unwrap();
+        assert_eq!(state.state_hash(), loaded_state.state_hash());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_clear_all() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let storage = Storage::new(temp_dir.path().to_str().unwrap())?;
+
+        // 保存多个节点的状态
+        for i in 1..=3 {
+            let node_id = format!("node-{}", i);
+            let state = SyncState::new(node_id.clone());
+            storage.save_state(&node_id, &state)?;
+        }
+
+        // 清空所有数据
+        storage.clear_all()?;
+
+        // 验证所有状态都已清空
+        for i in 1..=3 {
+            let node_id = format!("node-{}", i);
+            assert!(storage.load_state(&node_id)?.is_none());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_nonexistent_state() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let storage = Storage::new(temp_dir.path().to_str().unwrap())?;
+
+        // 尝试加载不存在的状态
+        let result = storage.load_state("nonexistent-node")?;
+        assert!(result.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_snapshots_empty() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let storage = Storage::new(temp_dir.path().to_str().unwrap())?;
+
+        let node_id = "test-node";
+
+        // 列出空快照列表
+        let versions = storage.list_snapshots(node_id)?;
+        assert_eq!(versions.len(), 0);
+
+        Ok(())
+    }
 }

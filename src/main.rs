@@ -1,14 +1,7 @@
-mod api;
-mod auth;
-mod crdt;
-mod grpc_service;
-mod signature;
-mod storage;
-mod sync;
-
 use anyhow::Result;
 use clap::Parser;
 use silent::prelude::*;
+use silent_crdt::{api, grpc_service, storage};
 use storage::Storage;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 

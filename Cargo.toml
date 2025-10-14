@@ -3,6 +3,14 @@ name = "silent-crdt"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "silent_crdt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "silent-crdt"
+path = "src/main.rs"
+
 [dependencies]
 silent = { path = "./silent/silent", features = ["static"] }
 scru128 = "3"
